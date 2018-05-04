@@ -54,6 +54,19 @@ passwordsMatch (a,b) =
     then return a
     else throwError "Passwords don't match!"
 
+type PlayerFields = '["player", "name", "gold"]
+
+data PlayerForm = PlayerForm
+  { playerName :: Text
+  , playerGold :: Int
+  }
+
+nestedForm :: Monad m => FormParser PlayerFields m PlayerForm
+nestedForm =
+  object' @"player" $ PlayerForm
+    <$> field @"name" notEmpty
+    <*> field' @"gold"
+
 main :: IO ()
 main = hspec spec
 
@@ -160,3 +173,33 @@ spec = describe "Forma" $ do
           [ "parse_error"  .= Null
           , "field_errors" .= object []
           , "result"       .= String "Bobabc" ]
+  context "with object" $ do
+    context "when a parse error happens" $
+      it "it's reported immediately" $ do
+        let input = object
+              [ "player" .= object
+                [ "name" .= String "Fanny"
+                ]
+              ]
+        r <- runForm nestedForm input $ \_ ->
+          return (FormResultSuccess ())
+        r `shouldBe` object
+          [ "parse_error"  .= String "Error in $: key \"gold\" not present"
+          , "field_errors" .= object []
+          , "result"       .= Null ]
+    context "when no parse error happens" $
+      it "it's reported immediately" $ do
+        let input = object
+              [ "player" .= object
+                [ "name" .= String "Fanny"
+                , "gold" .= (1 :: Int)
+                ]
+              ]
+        r <- runForm nestedForm input $ \PlayerForm {..} -> do
+          playerGold `shouldBe` 1
+          playerName `shouldBe` "Fanny"
+          return (FormResultSuccess Null)
+        r `shouldBe` object
+          [ "parse_error"  .= Null
+          , "field_errors" .= object []
+          , "result"       .= Null ]

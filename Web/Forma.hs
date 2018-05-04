@@ -69,6 +69,7 @@ module Web.Forma
   ( -- * Constructing a form
     field
   , field'
+  , object'
   , withCheck
     -- * Running a form
   , runForm
@@ -338,7 +339,7 @@ field :: forall (name :: Symbol) (names :: [Symbol]) m e s a.
 field check = FormParser $ \v -> do
   let name = pick @name @names
       f :: Value -> A.Parser s
-      f = withObject "form field" (.: unSelectedName name)
+      f = withObject "object" (.: unSelectedName name)
       r = A.parseEither f v
   case r of
     Left parseError -> pure (ParsingFailed parseError)
@@ -346,9 +347,9 @@ field check = FormParser $ \v -> do
       e <- runExceptT (check r')
       return $ case e of
         Left verr ->
-          (ValidationFailed (mkFieldError name verr))
+          ValidationFailed (mkFieldError name verr)
         Right x ->
-          (Succeeded x)
+          Succeeded x
 
 -- | The same as 'field', but does not require a checker.
 
@@ -361,6 +362,30 @@ field' :: forall (name :: Symbol) (names :: [Symbol]) m a.
 field' = field @name check
   where
     check :: a -> ExceptT () m a
+    check = return
+
+object' :: forall (name :: Symbol) (names :: [Symbol]) m a.
+  ( KnownSymbol name
+  , InSet name names
+  , Monad m )
+  => FormParser names m a
+  -> FormParser names m a
+object' (FormParser subForm) = FormParser $ \v -> do
+  let name = pick @name @names
+      f :: Value -> A.Parser Value
+      f = withObject "object" (.: unSelectedName name)
+      r = A.parseEither f v
+  case r of
+    Left parseError -> pure (ParsingFailed parseError)
+    Right r' -> do
+      e <- runExceptT (check r')
+      case e of
+        Left verr ->
+          return $ ValidationFailed (mkFieldError name verr)
+        Right x ->
+          subForm x
+  where
+    check :: Value -> ExceptT () m Value
     check = return
 
 -- | Transform a form by applying a checker on its result.
