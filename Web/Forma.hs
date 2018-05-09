@@ -80,9 +80,9 @@ module Web.Forma
   , toResponse
   , showFieldPath
     -- * Types and type functions
-  , FormParser
-  , BranchState(..)
   , FormResult (..)
+  , FormParser
+  , ValidationResult (..)
   , SelectedName(..)
   , InSet
   , FieldError(..) )
@@ -111,28 +111,28 @@ import qualified Data.Text           as T
 
 -- | State of a parsing branch.
 
-data BranchState (names :: [Symbol]) a
-  = ParsingFailed [SelectedName names] Text
+data FormResult (names :: [Symbol]) a
+  = FormParseError [SelectedName names] Text
     -- ^ Parsing of JSON failed, this is fatal, we shut down and report the
     -- parsing error. The first component specifies path to a problematic
     -- field and the second component is the text of error message.
-  | ValidationFailed (FieldError names)
+  | FormValidationError (FieldError names)
     -- ^ Validation of a field failed. This is also fatal but we still try
     -- to validate other branches (fields) to collect as many validation
     -- errors as possible.
-  | Succeeded a
+  | FormSuccess a
     -- ^ Success, we've got a result to return.
   deriving (Eq, Functor, Show)
 
-instance Applicative (BranchState names) where
-  pure                                            = Succeeded
-  (ParsingFailed l msg) <*> _                     = ParsingFailed l msg
-  (ValidationFailed _)  <*> (ParsingFailed l msg) = ParsingFailed l msg
-  (ValidationFailed e0) <*> (ValidationFailed e1) = ValidationFailed (e0 <> e1)
-  (ValidationFailed e)  <*> Succeeded _           = ValidationFailed e
-  Succeeded _           <*> (ParsingFailed l msg) = ParsingFailed l msg
-  Succeeded _           <*> (ValidationFailed e)  = ValidationFailed e
-  Succeeded f           <*> Succeeded x           = Succeeded (f x)
+instance Applicative (FormResult names) where
+  pure                                            = FormSuccess
+  (FormParseError l msg) <*> _                     = FormParseError l msg
+  (FormValidationError _)  <*> (FormParseError l msg) = FormParseError l msg
+  (FormValidationError e0) <*> (FormValidationError e1) = FormValidationError (e0 <> e1)
+  (FormValidationError e)  <*> FormSuccess _           = FormValidationError e
+  FormSuccess _           <*> (FormParseError l msg) = FormParseError l msg
+  FormSuccess _           <*> (FormValidationError e)  = FormValidationError e
+  FormSuccess f           <*> FormSuccess x           = FormSuccess (f x)
 
 -- | The type represents the parser that you can run on a 'Value' with the
 -- help of 'runForm'. The only way for the user of the library to create a
@@ -156,7 +156,7 @@ newtype FormParser (names :: [Symbol]) m a = FormParser
   { unFormParser
       :: Value
       -> ([SelectedName names] -> [SelectedName names])
-      -> m (BranchState names a)
+      -> m (FormResult names a)
   }
 
 instance Functor m => Functor (FormParser names m) where
@@ -165,29 +165,29 @@ instance Functor m => Functor (FormParser names m) where
 
 instance Applicative m => Applicative (FormParser names m) where
   pure x = FormParser $ \_ _ ->
-    pure (Succeeded x)
+    pure (FormSuccess x)
   (FormParser f) <*> (FormParser x) = FormParser $ \v path ->
     pure (<*>) <*> f v path <*> x v path
 
 instance Applicative m => Alternative (FormParser names m) where
   empty = FormParser $ \_ path ->
-    pure (ParsingFailed (path []) "empty")
+    pure (FormParseError (path []) "empty")
   (FormParser x) <|> (FormParser y) = FormParser $ \v path ->
     let g x' y' =
           case x' of
-            ParsingFailed  _ _ -> y'
-            ValidationFailed _ -> x'
-            Succeeded        _ -> x'
+            FormParseError    _ _ -> y'
+            FormValidationError _ -> x'
+            FormSuccess         _ -> x'
     in pure g <*> x v path <*> y v path
 
 -- | This is a type that user must return in the callback passed to the
 -- 'runForm' function. Quite simply, it allows you either report a error or
 -- finish successfully.
 
-data FormResult (names :: [Symbol]) a
-  = FormResultError (FieldError names)
+data ValidationResult (names :: [Symbol]) a
+  = ValidationError (FieldError names)
     -- ^ Form submission failed, here are the validation errors.
-  | FormResultSuccess a
+  | ValidationSuccess a
     -- ^ Form submission succeeded, send this info.
   deriving (Eq, Show)
 
@@ -383,8 +383,8 @@ value = FormParser $ \v path ->
   case A.parseEither parseJSON v of
     Left msg -> do
       let msg' = drop 2 (dropWhile (/= ':') msg)
-      return (ParsingFailed (path []) $ fromString msg')
-    Right x -> return (Succeeded x)
+      return (FormParseError (path []) $ fromString msg')
+    Right x -> return (FormSuccess x)
 
 -- | Use a given parser to parse a field. Suppose that you have a parser
 -- @loginForm@ that parses a structure like this one:
@@ -420,7 +420,7 @@ subParser p = FormParser $ \v path -> do
   case A.parseEither f v of
     Left msg -> do
       let msg' = drop 2 (dropWhile (/= ':') msg)
-      return (ParsingFailed (path' []) $ fromString msg')
+      return (FormParseError (path' []) $ fromString msg')
     Right v' ->
       unFormParser p v' path'
 
@@ -453,18 +453,18 @@ withCheck check (FormParser f) = FormParser $ \v path -> do
   let name = pick @name @names
   r <- f v path
   case r of
-    Succeeded x -> do
+    FormSuccess x -> do
       res <- runExceptT (check x)
       return $ case res of
         Left verr ->
           let path' = NE.fromList (path . (name :) $ [])
-          in ValidationFailed (mkFieldError path' verr)
+          in FormValidationError (mkFieldError path' verr)
         Right y ->
-          Succeeded y
-    ValidationFailed e ->
-      return (ValidationFailed e)
-    ParsingFailed path' msg ->
-      return (ParsingFailed path' msg)
+          FormSuccess y
+    FormValidationError e ->
+      return (FormValidationError e)
+    FormParseError path' msg ->
+      return (FormParseError path' msg)
 
 ----------------------------------------------------------------------------
 -- Running a form
@@ -472,34 +472,33 @@ withCheck check (FormParser f) = FormParser $ \v path -> do
 -- | Run the supplied parser on given input and call the specified callback
 -- that uses the result of parsing on success.
 --
--- The callback can either report an error with 'FormResultError', or report
--- success providing a value in 'FormResultSuccess'.
+-- The callback can either report an error with 'ValidationError', or report
+-- success providing a value in 'ValidationSuccess'.
 
 runForm :: (Monad m)
   => FormParser names m a -- ^ The form parser to run
   -> Value             -- ^ Input for the parser
-  -> (a -> m (FormResult names b)) -- ^ Callback that is called on success
-  -> m (BranchState names b)          -- ^ The result
+  -> (a -> m (ValidationResult names b)) -- ^ Callback that is called on success
+  -> m (FormResult names b)          -- ^ The result
 runForm (FormParser p) v f = do
   r <- p v id
   case r of
-    Succeeded x -> do
+    FormSuccess x -> do
       r' <- f x
       return $ case r' of
-        FormResultError validationError ->
-          ValidationFailed validationError
-        FormResultSuccess result ->
-          Succeeded result
-    ValidationFailed validationError ->
-      return $ ValidationFailed validationError
-    ParsingFailed path msg ->
-      return $ ParsingFailed path msg
-
+        ValidationError validationError ->
+          FormValidationError validationError
+        ValidationSuccess result ->
+          FormSuccess result
+    FormValidationError validationError ->
+      return $ FormValidationError validationError
+    FormParseError path msg ->
+      return $ FormParseError path msg
 
 ----------------------------------------------------------------------------
 -- Helpers
 
--- | Convert 'BranchState' to 'Response'.
+-- | Convert 'FormResult' to 'Response'.
 --
 -- 'Response' converted with `toJSON` to 'Value' has the following format:
 --
@@ -510,19 +509,19 @@ runForm (FormParser p) v f = do
 -- >       "foo": "Foo's error serialized to JSON.",
 -- >       "bar": "Bar's error…"
 -- >     }
--- >   "result": "What you return from the callback in FormResultSuccess."
+-- >   "result": "What you return from the callback in ValidationSuccess."
 -- > }
 
 toResponse :: (ToJSON a)
-  => BranchState names a
+  => FormResult names a
   -> Response names
 toResponse r =
   case r of
-    Succeeded result ->
+    FormSuccess result ->
       def { responseResult = toJSON result }
-    ValidationFailed validationError ->
+    FormValidationError validationError ->
       def { responseFieldError = pure validationError }
-    ParsingFailed path msg ->
+    FormParseError path msg ->
       def { responseParseError = Just (ParseError path msg) }
 
 -- | Produce textual representation of path to a field.

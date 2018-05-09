@@ -58,37 +58,37 @@ main = do
     print loginUsername
     print loginPassword
     print loginRememberMe
-    return $ FormResultSuccess $ String "Success"
+    return $ ValidationSuccess $ String "Success"
   print $ toJSON (toResponse r)
 
   -- success
-  r' <- runForm loginForm myInput $ return . FormResultSuccess
+  r' <- runForm loginForm myInput $ return . ValidationSuccess
   printResult r'
 
   -- parsing error
-  r'' <- runForm loginForm invalidInput $ return . FormResultSuccess
+  r'' <- runForm loginForm invalidInput $ return . ValidationSuccess
   printResult r''
 
   -- validation error
   r''' <- runForm loginForm myInput $ \LoginForm {..} -> do
     let msg = String "I don't like this username"
         e = mkFieldError (nes $ pick @"username" @LoginFields) msg
-    return $ FormResultError e
-  printResult (r''' :: BranchState LoginFields Text)
+    return $ ValidationError e
+  printResult (r''' :: FormResult LoginFields Text)
 
-printResult :: Show a => BranchState names a -> IO ()
+printResult :: Show a => FormResult names a -> IO ()
 printResult r =
   case r of
-    ParsingFailed path err ->
+    FormParseError path err ->
       T.putStrLn $ "Parse error: " <> err <> " at " <> showFieldPath path
-    ValidationFailed (FieldError errs) ->
+    FormValidationError (FieldError errs)  ->
       forM_ (M.toAscList errs) $ \(path, err) ->
         T.putStrLn $ "Validation error: " <> showErr err <> " at " <>
           showFieldPath (NE.toList path)
       where showErr err = case err of
               String e -> e
-              _ -> fromString $ show err
-    Succeeded result -> do
+              _        -> fromString $ show err
+    FormSuccess result -> do
       T.putStr "Success: "
       print result
 

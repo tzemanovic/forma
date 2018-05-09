@@ -1,20 +1,20 @@
-{-# LANGUAGE DataKinds            #-}
-{-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE RecordWildCards      #-}
-{-# LANGUAGE TypeApplications     #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE TypeApplications  #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Main (main) where
 
-import Control.Applicative
-import Control.Monad.Except
-import Data.Aeson
-import Data.List.NonEmpty (NonEmpty (..))
-import Data.Semigroup ((<>))
-import Data.Text (Text)
-import Test.Hspec
-import Web.Forma
-import qualified Data.Text           as T
+import           Control.Applicative
+import           Control.Monad.Except
+import           Data.Aeson
+import           Data.List.NonEmpty   (NonEmpty (..))
+import           Data.Semigroup       ((<>))
+import           Data.Text            (Text)
+import qualified Data.Text            as T
+import           Test.Hspec
+import           Web.Forma
 
 type LoginFields = '["username", "password", "remember_me"]
 
@@ -68,7 +68,7 @@ main = hspec spec
 type PlayerFields = '["name", "coords", "x", "y"]
 
 data PlayerForm = PlayerForm
-  { playerName :: String
+  { playerName   :: String
   , playerCoords :: CoordsForm
   }
 
@@ -123,7 +123,7 @@ spec = do
               ]
             ]
       r <- runForm p input finalize
-      r `shouldBe` Succeeded txt
+      r `shouldBe` FormSuccess txt
     it "accesses nested object correctly" $ do
       let input = object
             [ "name" .= String "Fanny"
@@ -133,8 +133,8 @@ spec = do
               ]
             ]
       r <- runForm player input $ \PlayerForm {..} ->
-        return $ FormResultSuccess (playerName ++ " at " ++ show playerCoords)
-      r `shouldBe` Succeeded "Fanny at {1.1, 25.0}"
+        return $ ValidationSuccess (playerName ++ " at " ++ show playerCoords)
+      r `shouldBe` FormSuccess "Fanny at {1.1, 25.0}"
     it "reports correct failure when field is missing" $ do
       let input = object
             [ "username" .= object
@@ -142,7 +142,7 @@ spec = do
               ]
             ]
       r <- runForm p input finalize
-      r `shouldBe` ParsingFailed
+      r `shouldBe` FormParseError
                     [ pick @"username" , pick @"password" , pick @"remember_me"]
                     "key \"remember_me\" not present"
     it "reports correct field path on parse failure" $ do
@@ -154,9 +154,9 @@ spec = do
               ]
             ]
       r <- runForm p input finalize
-      r `shouldBe` ParsingFailed
-                    [ pick @"username" , pick @"password" , pick @"remember_me"]
-                    "expected Text, encountered Boolean"
+      r `shouldBe` FormParseError
+            [ pick @"username" , pick @"password" , pick @"remember_me"]
+            "expected Text, encountered Boolean"
     it "reports correct field path on validation failure" $ do
       let input = object
             [ "username" .= object
@@ -166,8 +166,8 @@ spec = do
               ]
             ]
       r <- runForm p input finalize
-      r `shouldBe` ValidationFailed (mkFieldError (nes $ pick @"username") $
-                      String fieldEmptyMsg)
+      r `shouldBe` FormValidationError
+            (mkFieldError (nes $ pick @"username") (String fieldEmptyMsg))
 
   describe "Forma (older test suite)" $ do
     context "when a parse error happens" $
@@ -177,9 +177,9 @@ spec = do
               , "password"    .= (2 :: Int)
               , "remember_me" .= True ]
         r <- runForm loginForm input $ \_ ->
-          return (FormResultSuccess ())
-        r `shouldBe` ParsingFailed
-                      [ pick @"username" ] "expected Text, encountered Number"
+          return (ValidationSuccess ())
+        r `shouldBe` FormParseError
+              [ pick @"username" ] "expected Text, encountered Number"
     context "when no parse error happens" $ do
       context "when no validation errors happen in 1 step" $ do
         context "when callback reports success" $
@@ -189,8 +189,8 @@ spec = do
                   , "password"    .= String "123" ]
             r <- runForm loginForm input $ \LoginForm {..} -> do
               loginRememberMe `shouldBe` True
-              return (FormResultSuccess (loginUsername <> loginPassword))
-            r `shouldBe` Succeeded "Bob123"
+              return (ValidationSuccess (loginUsername <> loginPassword))
+            r `shouldBe` FormSuccess "Bob123"
         context "when callback reports validation errors" $
           it "correct resulting value is returned" $ do
             let input = object
@@ -200,13 +200,11 @@ spec = do
                 msg0, msg1 :: Text
                 msg0 = "I don't like this username."
                 msg1 = "I don't like this password."
-            r <- runForm loginForm input $ \LoginForm {..} -> do
-              let e0 = mkFieldError (nes $ pick @"username" @LoginFields) msg0
-                  e1 = mkFieldError (nes $ pick @"password" @LoginFields) msg1
-              return (FormResultError (e0 <> e1) :: FormResult LoginFields ())
-            r `shouldBe` ValidationFailed
-               (mkFieldError (nes $ pick @"username") (String msg0)
-               <> mkFieldError (nes $ pick @"password") (String msg1))
+            let e0 = mkFieldError (nes $ pick @"username" @LoginFields) msg0
+                e1 = mkFieldError (nes $ pick @"password" @LoginFields) msg1
+            r <- runForm loginForm input $ \LoginForm {..} ->
+              return (ValidationError (e0 <> e1) :: ValidationResult LoginFields ())
+            r `shouldBe` FormValidationError (e0 <> e1)
       context "when validation errors happen in 1 step" $
         it "all of them are reported" $ do
           let input = object
@@ -214,8 +212,8 @@ spec = do
                 , "password"    .= String ""
                 , "remember_me" .= True ]
           r <- runForm loginForm input $ \_ ->
-            return (FormResultSuccess ())
-          r `shouldBe` ValidationFailed
+            return (ValidationSuccess ())
+          r `shouldBe` FormValidationError
               (mkFieldError (nes $ pick @"username") (String fieldEmptyMsg)
               <> mkFieldError (nes $ pick @"password") (String fieldEmptyMsg))
     context "for withCheck being used in SignupForm example" $ do
@@ -226,8 +224,8 @@ spec = do
                 , "password"    .= String ""
                 , "password_confirmation" .= String "" ]
           r <- runForm signupForm input $ \_ ->
-            return (FormResultSuccess ())
-          r `shouldBe` ValidationFailed
+            return (ValidationSuccess ())
+          r `shouldBe` FormValidationError
               (mkFieldError (nes $ pick @"username") (String fieldEmptyMsg)
               <> mkFieldError (nes $ pick @"password") (String fieldEmptyMsg)
               <> mkFieldError (nes $ pick @"password_confirmation") (String fieldEmptyMsg))
@@ -238,8 +236,8 @@ spec = do
                 , "password"    .= String "abc"
                 , "password_confirmation" .= String "def" ]
           r <- runForm signupForm input $ \_ ->
-            return (FormResultSuccess ())
-          r `shouldBe` ValidationFailed
+            return (ValidationSuccess ())
+          r `shouldBe` FormValidationError
               (mkFieldError (nes $ pick @"username") (String fieldEmptyMsg)
               <> mkFieldError (nes $ pick @"password_confirmation") (String passwordsDontMatchMsg))
       context "when username and both password fields are filled in correctly" $
@@ -249,8 +247,8 @@ spec = do
                 , "password"    .= String "abc"
                 , "password_confirmation" .= String "abc" ]
           r <- runForm signupForm input $ \SignupForm {..} ->
-            return (FormResultSuccess ( signupUsername <> signupPassword ))
-          r `shouldBe` Succeeded "Bobabc"
+            return (ValidationSuccess ( signupUsername <> signupPassword ))
+          r `shouldBe` FormSuccess "Bobabc"
 
 ----------------------------------------------------------------------------
 -- Helpers
@@ -272,8 +270,8 @@ rSuccess r = object
   , "result"       .= r
   ]
 
-finalize :: Monad m => a -> m (FormResult names a)
-finalize = return . FormResultSuccess
+finalize :: Monad m => a -> m (ValidationResult names a)
+finalize = return . ValidationSuccess
 
 nes :: a -> NonEmpty a
 nes x = x :| []
