@@ -64,11 +64,17 @@ Here is a complete working example:
 
 module Main (main) where
 
-import Control.Monad.Except
-import Data.Aeson
-import Data.Text (Text)
-import Web.Forma
-import qualified Data.Text as T
+import           Control.Monad        (forM_)
+import           Control.Monad.Except
+import           Data.Aeson
+import           Data.List.NonEmpty   (NonEmpty (..))
+import qualified Data.List.NonEmpty   as NE
+import qualified Data.Map.Strict      as M
+import           Data.String          (fromString)
+import           Data.Text            (Text)
+import qualified Data.Text            as T
+import qualified Data.Text.IO         as T
+import           Web.Forma
 
 type LoginFields = '["username", "password", "remember_me"]
 
@@ -76,7 +82,7 @@ data LoginForm = LoginForm
   { loginUsername   :: Text
   , loginPassword   :: Text
   , loginRememberMe :: Bool
-  }
+  } deriving Show
 
 loginForm :: Monad m => FormParser LoginFields m LoginForm
 loginForm = LoginForm
@@ -97,14 +103,52 @@ myInput = object
   , "remember_me" .= True
   ]
 
+invalidInput :: Value
+invalidInput = object
+  [ "username"    .= ("Bob" :: Text)
+  , "remember_me" .= True
+  ]
+
 main :: IO ()
 main = do
-  r <- runForm loginForm myInput $ \LoginForm {..} -> do
-    print loginUsername
-    print loginPassword
-    print loginRememberMe
-    return (FormResultSuccess ())
-  print r
+  -- success
+  r' <- runForm loginForm myInput $ return . FormResultSuccess
+  printResult r'
+
+  -- parsing error
+  r'' <- runForm loginForm invalidInput $ return . FormResultSuccess
+  printResult r''
+
+  -- validation error
+  r''' <- runForm loginForm myInput $ \LoginForm {..} -> do
+    let msg = String "I don't like this username"
+        e = mkFieldError (nes $ pick @"username" @LoginFields) msg
+    return $ FormResultError e
+  printResult (r''' :: BranchState LoginFields Text)
+
+printResult :: Show a => BranchState names a -> IO ()
+printResult r = do
+  case r of
+    ParsingFailed path err -> do
+      putStrLn "Parse error: "
+      putStr $ err ++ ", at "
+      T.putStrLn $ showFieldPath path
+    ValidationFailed (FieldError errs) ->
+      forM_ (M.toAscList errs) $ \(path, err) -> do
+        putStrLn "Validation error: "
+        T.putStr $ showErr err
+        putStr ", at "
+        T.putStrLn $ showFieldPath  $ NE.toList path
+      where showErr err = case err of
+              String e -> e
+              _ -> fromString $ show err
+    Succeeded result -> do
+      T.putStrLn "Success: "
+      print result
+  putStrLn ""
+
+nes :: a -> NonEmpty a
+nes x = x :| []
 ```
 
 You may want to play with it a bit before writing serious code.

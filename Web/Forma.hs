@@ -77,12 +77,16 @@ module Web.Forma
   , pick
   , unSelectedName
   , mkFieldError
+    -- * Helpers
+  , toResponse
+  , showFieldPath
     -- * Types and type functions
+  , BranchState(..)
   , FormParser
   , FormResult (..)
   , SelectedName
   , InSet
-  , FieldError )
+  , FieldError(..) )
 where
 
 import Control.Applicative
@@ -118,7 +122,7 @@ data BranchState (names :: [Symbol]) a
     -- errors as possible.
   | Succeeded a
     -- ^ Success, we've got a result to return.
-  deriving Functor
+  deriving (Eq, Functor, Show)
 
 instance Applicative (BranchState names) where
   pure                                            = Succeeded
@@ -472,11 +476,35 @@ withCheck check (FormParser f) = FormParser $ \v path -> do
 -- | Run the supplied parser on given input and call the specified callback
 -- that uses the result of parsing on success.
 --
--- The callback can either report a 'FieldError' (one or more), or report
--- success providing a value that will be converted to JSON and included in
--- the resulting 'Value' (response).
+-- The callback can either report an error with 'FormResultError', or report
+-- success providing a value in 'FormResultSuccess'.
+
+runForm :: (Monad m)
+  => FormParser names m a          -- ^ The form parser to run
+  -> Value                         -- ^ Input for the parser
+  -> (a -> m (FormResult names b)) -- ^ Callback that is called on success
+  -> m (BranchState names b)       -- ^ The form result
+runForm (FormParser p) v f = do
+  r <- p v id
+  case r of
+    ParsingFailed path msg ->
+      return $ ParsingFailed path msg
+    ValidationFailed errors ->
+      return $ ValidationFailed errors
+    Succeeded x -> do
+      r' <- f x
+      return $ case r' of
+        FormResultError errors ->
+          ValidationFailed errors
+        FormResultSuccess result ->
+          Succeeded result
+
+----------------------------------------------------------------------------
+-- Helpers
+
+-- | Convert 'BranchState' to 'Response'.
 --
--- The resulting 'Value' has the following format:
+-- 'Response' converted with `toJSON` to 'Value' has the following format:
 --
 -- > {
 -- >   "parse_error": "Text or null."
@@ -488,28 +516,17 @@ withCheck check (FormParser f) = FormParser $ \v path -> do
 -- >   "result": "What you return from the callback in FormResultSuccess."
 -- > }
 
-runForm :: (Monad m, ToJSON b)
-  => FormParser names m a -- ^ The form parser to run
-  -> Value             -- ^ Input for the parser
-  -> (a -> m (FormResult names b)) -- ^ Callback that is called on success
-  -> m Value           -- ^ The result to send back to the client
-runForm (FormParser p) v f = do
-  r <- p v id
+toResponse :: (ToJSON a)
+  => BranchState names a
+  -> Response names
+toResponse r =
   case r of
-    ParsingFailed path msg -> return . toJSON $
-      def { responseParseError = Just (ParseError path msg) }
-    ValidationFailed validationError -> return . toJSON $
+    Succeeded result ->
+      def { responseResult = toJSON result }
+    ValidationFailed validationError ->
       def { responseFieldError = pure validationError }
-    Succeeded x -> do
-      r' <- f x
-      return . toJSON $ case r' of
-        FormResultError validationError ->
-          def { responseFieldError = pure validationError }
-        FormResultSuccess result ->
-          def { responseResult = toJSON result }
-
-----------------------------------------------------------------------------
--- Helpers
+    ParsingFailed path msg ->
+      def { responseParseError = Just (ParseError path msg) }
 
 -- | Produce textual representation of path to a field.
 
